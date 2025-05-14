@@ -204,7 +204,7 @@ def color_selection():
 
                 if st.button(f"Удалить #{i + 1}", key=f"remove_{i}"):
                     st.session_state.selected_colors.pop(i)
-                    st.experimental_rerun()
+                    st.rerun()
 
             col_index = (col_index + 1) % 5  # Переход на следующую колонку
 
@@ -257,7 +257,7 @@ def coordinate_system():
             st.session_state.min_vals = (0, 0)
             st.success(f"Начало координат установлено в точке ({x}, {y})")
             st.session_state.click_origin_mode = False
-            st.experimental_rerun()
+            st.rerun()
 
     # Ручной ввод координат
     col1, col2 = st.columns(2)
