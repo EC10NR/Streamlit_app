@@ -105,7 +105,7 @@ class LineSplitter:
                     # Заполнение интерполированной области
                     start_y = max(0, y - line_width // 2)
                     end_y = min(height, y + line_width // 2 + 1)
-                    interpolated_mask[start_y:end_y, x] = 255
+                    interpolated_mask[start_y:end_y + 1, x] = 255
 
         return interpolated_mask
 
