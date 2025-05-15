@@ -157,7 +157,6 @@ def crop_image():
         display_image = st.session_state.crop_preview
 
     img_display = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
-    st.image(img_display, use_column_width=True, caption="Выберите область обрезки")
 
     # Обработка кликов
     coords = streamlit_image_coordinates(img_display, key="crop_coords")
@@ -266,40 +265,22 @@ def color_selection():
 
     # Проверяем наличие изображения
     if st.session_state.crop_state.get('cropped_image') is not None:
-        # Сохраняем обрезанное изображение в отдельный ключ при первом обнаружении
         if 'preserved_cropped_image' not in st.session_state:
             st.session_state.preserved_cropped_image = st.session_state.crop_state['cropped_image'].copy()
-            st.write("Saved crop_state['cropped_image'] to preserved_cropped_image")
         source_image = st.session_state.crop_state['cropped_image']
-        st.write("Using crop_state['cropped_image'] as source_image")
     elif 'preserved_cropped_image' in st.session_state:
         source_image = st.session_state.preserved_cropped_image
-        st.write("Using preserved_cropped_image as source_image (crop_state['cropped_image'] is None)")
     elif st.session_state.processed_image is not None:
         source_image = st.session_state.processed_image
-        st.write("Using processed_image as source_image (no cropping applied)")
     else:
         show_warning("Сначала загрузите и обработайте изображение")
         return
 
-    # Отладка: размеры источника
-    st.write(f"source_image shape: {source_image.shape}")
-
     # Инициализируем или обновляем статическое изображение для отображения
     if ('color_selection_image' not in st.session_state or
         st.session_state.color_selection_image.shape != source_image.shape):
-        st.write("Updating color_selection_image")
-        # Преобразуем source_image в RGB для корректного отображения
         source_rgb = cv2.cvtColor(source_image.copy(), cv2.COLOR_BGR2RGB)
         st.session_state.color_selection_image = source_rgb
-    else:
-        st.write("Keeping existing color_selection_image")
-
-    # Отображаем статическое изображение (в RGB)
-    st.image(st.session_state.color_selection_image, caption="Текущее изображение для выбора цвета", use_column_width=True)
-
-    # Отладочный вывод размеров
-    st.write(f"Размер отображаемого изображения: {st.session_state.color_selection_image.shape}")
 
     # Инициализация состояния цветов
     if 'selected_colors' not in st.session_state:
@@ -310,9 +291,6 @@ def color_selection():
 
     if clicked_coords is not None:
         x, y = int(clicked_coords["x"]), int(clicked_coords["y"])
-        # Отладка: координаты клика
-        st.write(f"Clicked coordinates: ({x}, {y})")
-        # Используем color_selection_image (RGB) для получения цвета
         color_rgb = st.session_state.color_selection_image[y, x]
         selected_color = (int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
 
@@ -357,7 +335,7 @@ def color_selection():
                     st.session_state.selected_colors.pop(i)
                     st.rerun()
 
-    # Инициализация LineSplitter с текущим изображением (BGR, как ожидает OpenCV)
+    # Инициализация LineSplitter с текущим изображением
     st.session_state.line_splitter = LineSplitter(source_image)
 
 def get_current_image():
@@ -438,19 +416,13 @@ def line_analysis():
     # Проверяем наличие изображения
     if st.session_state.crop_state.get('cropped_image') is not None:
         img = st.session_state.crop_state['cropped_image']
-        st.write("Using crop_state['cropped_image'] as source_image")
     elif 'preserved_cropped_image' in st.session_state:
         img = st.session_state.preserved_cropped_image
-        st.write("Using preserved_cropped_image as source_image (crop_state['cropped_image'] is None)")
     elif st.session_state.processed_image is not None:
         img = st.session_state.processed_image
-        st.write("Using processed_image as source_image (no cropping applied)")
     else:
         show_warning("Сначала загрузите и обрежьте изображение")
         return
-
-    # Отладка: размеры изображения
-    st.write(f"Source image shape: {img.shape}")
 
     if "origin_point" not in st.session_state or st.session_state.origin_point is None:
         show_warning("Сначала установите начало координат в разделе 'Система координат'")
@@ -458,7 +430,7 @@ def line_analysis():
 
     st.session_state.lines_extracted = []
     for color in st.session_state.selected_colors:
-        temp_splitter = LineSplitter(img)  # Используем обрезанное изображение
+        temp_splitter = LineSplitter(img)
         if temp_splitter.splitter(color):
             lines = temp_splitter.get_lines()
             if lines:
