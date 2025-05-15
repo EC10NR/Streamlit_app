@@ -27,12 +27,18 @@ if 'selected_colors' not in st.session_state:
     st.session_state.selected_colors = []
 if 'origin_point' not in st.session_state:
     st.session_state.origin_point = None
+if 'preserved_origin_point' not in st.session_state:
+    st.session_state.preserved_origin_point = None
 if 'processed_image' not in st.session_state:
     st.session_state.processed_image = None
 if 'min_vals' not in st.session_state:
     st.session_state.min_vals = (0, 0)
 if 'max_vals' not in st.session_state:
     st.session_state.max_vals = (1, 1)
+if 'preserved_min_vals' not in st.session_state:
+    st.session_state.preserved_min_vals = None
+if 'preserved_max_vals' not in st.session_state:
+    st.session_state.preserved_max_vals = None
 if 'click_origin_mode' not in st.session_state:
     st.session_state.click_origin_mode = False
 if 'crop_state' not in st.session_state:
@@ -74,8 +80,11 @@ def upload_image():
         st.session_state.line_splitter = LineSplitter(image)
         st.session_state.selected_colors = []
         st.session_state.origin_point = (0, 0)
+        st.session_state.preserved_origin_point = None
         st.session_state.min_vals = (0, 0)
         st.session_state.max_vals = (1, 1)
+        st.session_state.preserved_min_vals = None
+        st.session_state.preserved_max_vals = None
         st.session_state.click_origin_mode = False
         st.session_state.crop_state = {
             'top_left': None,
@@ -278,7 +287,7 @@ def color_selection():
 
     # Инициализируем или обновляем статическое изображение для отображения
     if ('color_selection_image' not in st.session_state or
-        st.session_state.color_selection_image.shape != source_image.shape):
+            st.session_state.color_selection_image.shape != source_image.shape):
         source_rgb = cv2.cvtColor(source_image.copy(), cv2.COLOR_BGR2RGB)
         st.session_state.color_selection_image = source_rgb
 
@@ -338,6 +347,7 @@ def color_selection():
     # Инициализация LineSplitter с текущим изображением
     st.session_state.line_splitter = LineSplitter(source_image)
 
+
 def get_current_image():
     """Возвращает текущее рабочее изображение с правильным приоритетом"""
     if st.session_state.crop_state.get('cropped_image') is not None:
@@ -354,15 +364,15 @@ def coordinate_system():
         show_warning("Сначала загрузите и обрежьте изображение")
         return
 
-    img = st.session_state.processed_image
-
     if not st.session_state.get("selected_colors"):
         show_warning("Сначала выберите цвета линий в разделе 'Выбор линий по цвету'")
         return
 
-    if "origin_point" not in st.session_state:
+    # Инициализация начальных значений, если они отсутствуют
+    if "origin_point" not in st.session_state or st.session_state.origin_point is None:
         st.session_state.origin_point = (0, 0)
-        st.session_state.min_vals = (0, 0)
+    if "preserved_origin_point" not in st.session_state:
+        st.session_state.preserved_origin_point = None
 
     img_display = cv2.cvtColor(st.session_state.processed_image, cv2.COLOR_BGR2RGB)
 
@@ -378,36 +388,66 @@ def coordinate_system():
             x = coordinates["x"]
             y = coordinates["y"]
             st.session_state.origin_point = (x, y)
-            st.session_state.min_vals = (0, 0)
-            show_success(f"Начало координат установлено в точке ({x}, {y})")
+            st.session_state.preserved_origin_point = (x, y)
+            show_success(f"Начало координат установлено в точке ({x:.1f}, {y:.1f})")
             st.session_state.click_origin_mode = False
             st.rerun()
 
+    # Поля ввода для ручной установки начала координат
     col1, col2 = st.columns(2)
-    origin_x = col1.number_input("Координата X",
-                                 value=st.session_state.origin_point[0],
-                                 key="origin_x")
-    origin_y = col2.number_input("Координата Y",
-                                 value=st.session_state.origin_point[1],
-                                 key="origin_y")
+    with col1:
+        origin_x = st.number_input("Координата X",
+                                   value=float(st.session_state.origin_point[0]),
+                                   key="origin_x")
+    with col2:
+        origin_y = st.number_input("Координата Y",
+                                   value=float(st.session_state.origin_point[1]),
+                                   key="origin_y")
+
+    # Автоматическое сохранение при изменении полей
+    st.session_state.origin_point = (origin_x, origin_y)
+    st.session_state.preserved_origin_point = (origin_x, origin_y)
 
     if st.button("Установить начало координат (вручную)"):
-        st.session_state.origin_point = (origin_x, origin_y)
-        st.session_state.min_vals = (0, 0)
-        show_success("Точка отсчета установлена")
+        show_success(f"Начало координат установлено в точке ({origin_x:.1f}, {origin_y:.1f})")
         st.rerun()
 
     st.subheader("Установка диапазона координат")
     col1, col2 = st.columns(2)
-    x_min = col1.number_input("X минимальное", value=float(st.session_state.min_vals[0]), key="x_min")
-    x_max = col1.number_input("X максимальное", value=float(st.session_state.max_vals[0]), key="x_max")
-    y_min = col2.number_input("Y минимальное", value=float(st.session_state.min_vals[1]), key="y_min")
-    y_max = col2.number_input("Y максимальное", value=float(st.session_state.max_vals[1]), key="y_max")
+    with col1:
+        x_min = st.number_input("X минимальное",
+                                value=float(st.session_state.min_vals[0]),
+                                key="x_min")
+        x_max = st.number_input("X максимальное",
+                                value=float(st.session_state.max_vals[0]),
+                                key="x_max")
+    with col2:
+        y_min = st.number_input("Y минимальное",
+                                value=float(st.session_state.min_vals[1]),
+                                key="y_min")
+        y_max = st.number_input("Y максимальное",
+                                value=float(st.session_state.max_vals[1]),
+                                key="y_max")
 
-    if st.button("Применить диапазон координат"):
+    # Автоматическое сохранение диапазона при изменении полей
+    if x_max > x_min and y_max > y_min:
         st.session_state.min_vals = (x_min, y_min)
         st.session_state.max_vals = (x_max, y_max)
-        show_success("Диапазон координат обновлен")
+        st.session_state.preserved_min_vals = (x_min, y_min)
+        st.session_state.preserved_max_vals = (x_max, y_max)
+    else:
+        st.warning("Максимальные значения должны быть больше минимальных")
+
+    if st.button("Применить диапазон координат"):
+        if x_max <= x_min or y_max <= y_min:
+            st.error("Максимальные значения должны быть больше минимальных")
+        else:
+            st.session_state.min_vals = (x_min, y_min)
+            st.session_state.max_vals = (x_max, y_max)
+            st.session_state.preserved_min_vals = (x_min, y_min)
+            st.session_state.preserved_max_vals = (x_max, y_max)
+            show_success(f"Диапазон координат обновлен: X({x_min}, {x_max}), Y({y_min}, {y_max})")
+            st.rerun()
 
 
 def line_analysis():
@@ -424,8 +464,18 @@ def line_analysis():
         show_warning("Сначала загрузите и обрежьте изображение")
         return
 
-    if "origin_point" not in st.session_state or st.session_state.origin_point is None:
+    if (st.session_state.preserved_origin_point is None or
+            not isinstance(st.session_state.preserved_origin_point, tuple) or
+            len(st.session_state.preserved_origin_point) != 2):
         show_warning("Сначала установите начало координат в разделе 'Система координат'")
+        return
+
+    # Проверка наличия сохраненного диапазона координат
+    if (st.session_state.preserved_min_vals is None or
+            st.session_state.preserved_max_vals is None or
+            st.session_state.preserved_max_vals[0] <= st.session_state.preserved_min_vals[0] or
+            st.session_state.preserved_max_vals[1] <= st.session_state.preserved_min_vals[1]):
+        show_warning("Сначала установите корректный диапазон координат в разделе 'Система координат'")
         return
 
     st.session_state.lines_extracted = []
@@ -442,8 +492,18 @@ def line_analysis():
 
     for i, line in enumerate(st.session_state.lines_extracted):
         st.subheader(f"Линия {i + 1} - RGB{line.color}")
+
+        # Получаем размеры обрезанного изображения
+        if st.session_state.crop_state.get('cropped_image') is not None:
+            img_height, img_width = st.session_state.crop_state['cropped_image'].shape[:2]
+        else:
+            img_height, img_width = st.session_state.processed_image.shape[:2]
+
+        # Преобразуем изображение линии в RGB и масштабируем до размеров обрезанного изображения
         line_rgb = cv2.cvtColor(line.image, cv2.COLOR_BGR2RGB)
-        st.image(line_rgb, caption=f"Выделенная линия {i + 1}", use_column_width=True)
+        line_rgb = cv2.resize(line_rgb, (img_width, img_height))
+
+        st.image(line_rgb, caption=f"Выделенная линия {i + 1}", width=img_width)
 
         col1, col2 = st.columns(2)
         with col1:
@@ -455,12 +515,13 @@ def line_analysis():
             try:
                 scanner = PointsScanner(
                     image=line.image.copy(),
-                    origin_x=st.session_state.origin_point[0],
-                    origin_y=st.session_state.origin_point[1]
+                    origin_x=st.session_state.preserved_origin_point[0],
+                    origin_y=st.session_state.preserved_origin_point[1]
                 )
 
-                scanner.set_minimals(st.session_state.min_vals)
-                scanner.set_maximals(st.session_state.max_vals)
+                # Используем сохраненные значения диапазона
+                scanner.set_minimals(st.session_state.preserved_min_vals)
+                scanner.set_maximals(st.session_state.preserved_max_vals)
 
                 scanner.find_contours(filter_type=filter_type)
                 scanner.calc_points(interval=interval)
@@ -517,6 +578,7 @@ def line_analysis():
 
                 except Exception as e:
                     st.error(f"Ошибка при экспорте: {str(e)}")
+
 
 def main():
     st.title("Извлечение данных с графиков")
