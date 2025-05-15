@@ -1,8 +1,6 @@
-# -*- coding: UTF-8 -*-
 import streamlit as st
 import cv2
 import numpy as np
-import os
 import pandas as pd
 import plotly.express as px
 from PIL import Image
@@ -37,6 +35,15 @@ if 'max_vals' not in st.session_state:
     st.session_state.max_vals = (1, 1)
 if 'click_origin_mode' not in st.session_state:
     st.session_state.click_origin_mode = False
+if 'crop_state' not in st.session_state:
+    st.session_state.crop_state = {
+        'top_left': None,
+        'bottom_right': None,
+        'active': None,
+        'cropped_image': None
+    }
+if 'original_image' not in st.session_state:
+    st.session_state.original_image = None
 
 
 # Вспомогательные функции
@@ -59,20 +66,29 @@ def upload_image():
     if uploaded_file is not None:
         file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
         image = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-        st.session_state.preprocessor.reset_original_img(image)
+
+        # Сбрасываем все состояния
+        st.session_state.preprocessor = Preprocessor(image)
         st.session_state.processed_image = image
+        st.session_state.original_image = image.copy()
         st.session_state.line_splitter = LineSplitter(image)
         st.session_state.selected_colors = []
-        # Инициализация начальных значений координат
         st.session_state.origin_point = (0, 0)
         st.session_state.min_vals = (0, 0)
         st.session_state.max_vals = (1, 1)
         st.session_state.click_origin_mode = False
-        # Очистка предыдущих результатов
+        st.session_state.crop_state = {
+            'top_left': None,
+            'bottom_right': None,
+            'active': None,
+            'cropped_image': None
+        }
+
         if "lines_extracted" in st.session_state:
             del st.session_state.lines_extracted
         if "points_df" in st.session_state:
             del st.session_state.points_df
+
         return image
     return None
 
@@ -84,21 +100,21 @@ def preprocess_controls():
         st.sidebar.warning("Сначала загрузите изображение")
         return
 
-    # Основные настройки
     if st.sidebar.checkbox("Автоматическое выравнивание"):
         angle = st.session_state.preprocessor.auto_rotate()
         st.session_state.processed_image = st.session_state.preprocessor.get_preprocessed()
+        st.session_state.line_splitter = LineSplitter(st.session_state.processed_image)
         st.sidebar.write(f"Угол поворота: {angle:.1f}°")
 
     if st.sidebar.checkbox("Коррекция перспективы"):
         try:
             corners = st.session_state.preprocessor.auto_correct_perspective()
             st.session_state.processed_image = st.session_state.preprocessor.get_preprocessed()
+            st.session_state.line_splitter = LineSplitter(st.session_state.processed_image)
             st.sidebar.write("Перспектива скорректирована")
         except ValueError as e:
             show_warning(str(e))
 
-    # Дополнительные настройки
     if st.sidebar.checkbox("Дополнительные настройки"):
         wb = st.sidebar.slider("Баланс белого", 0.1, 2.0, 1.0, 0.1)
         st.session_state.preprocessor.white_balance(wb)
@@ -120,128 +136,258 @@ def preprocess_controls():
     if st.sidebar.button("Сбросить настройки"):
         st.session_state.preprocessor.restore()
         st.session_state.processed_image = st.session_state.preprocessor.get_preprocessed()
+        st.session_state.line_splitter = LineSplitter(st.session_state.processed_image)
 
-    st.session_state.processed_image = st.session_state.preprocessor.get_preprocessed()
+
+def crop_image():
+    st.header("Обрезка изображения")
+
+    if st.session_state.processed_image is None:
+        show_warning("Сначала загрузите изображение")
+        return
+
+    # Инициализация состояния обрезки
+    if 'crop_points' not in st.session_state:
+        st.session_state.crop_points = []
+        st.session_state.crop_preview = None
+
+    # Отображение текущего изображения (оригинал или превью)
+    display_image = st.session_state.processed_image.copy()
+    if st.session_state.crop_preview is not None:
+        display_image = st.session_state.crop_preview
+
+    img_display = cv2.cvtColor(display_image, cv2.COLOR_BGR2RGB)
+    st.image(img_display, use_column_width=True, caption="Выберите область обрезки")
+
+    # Обработка кликов
+    coords = streamlit_image_coordinates(img_display, key="crop_coords")
+
+    if coords is not None:
+        x, y = int(coords["x"]), int(coords["y"])
+
+        if len(st.session_state.crop_points) == 0:
+            # Первый клик - верхний левый угол
+            st.session_state.crop_points = [(x, y)]
+            st.success(f"Верхний левый угол установлен: ({x}, {y})")
+
+            # Создаем превью с отметкой
+            preview = st.session_state.processed_image.copy()
+            cv2.circle(preview, (x, y), 5, (0, 0, 255), -1)
+            st.session_state.crop_preview = preview
+
+        elif len(st.session_state.crop_points) == 1:
+            # Второй клик - нижний правый угол
+            first_x, first_y = st.session_state.crop_points[0]
+
+            if x > first_x and y > first_y:
+                st.session_state.crop_points.append((x, y))
+                st.success(f"Нижний правый угол установлен: ({x}, {y})")
+
+                # Создаем превью с прямоугольником
+                preview = st.session_state.processed_image.copy()
+                cv2.rectangle(preview,
+                              st.session_state.crop_points[0],
+                              st.session_state.crop_points[1],
+                              (0, 255, 0), 2)
+                st.session_state.crop_preview = preview
+            else:
+                st.error("Нижний правый угол должен быть правее и ниже верхнего левого")
+
+    # Кнопки управления
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("Подтвердить обрезку") and len(st.session_state.crop_points) == 2:
+            apply_crop()
+
+    with col2:
+        if st.button("Начать заново"):
+            st.session_state.crop_points = []
+            st.session_state.crop_preview = None
+            st.success("Выбор точек сброшен")
+
+    with col3:
+        if st.button("Отменить обрезку"):
+            reset_cropping()
+
+
+def apply_crop():
+    """Применяет обрезку и сохраняет результат"""
+    try:
+        if len(st.session_state.crop_points) != 2:
+            raise ValueError("Не выбраны оба угла")
+
+        top_left = st.session_state.crop_points[0]
+        bottom_right = st.session_state.crop_points[1]
+
+        cropped = st.session_state.processed_image[
+                  top_left[1]:bottom_right[1],
+                  top_left[0]:bottom_right[0]]
+
+        if cropped.size == 0:
+            raise ValueError("Область обрезки пуста")
+
+        # Сохраняем результат
+        st.session_state.crop_state = {
+            'top_left': top_left,
+            'bottom_right': bottom_right,
+            'cropped_image': cropped
+        }
+
+        st.session_state.processed_image = cropped
+        st.session_state.line_splitter = LineSplitter(cropped)
+
+        # Сбрасываем временные данные
+        st.session_state.crop_points = []
+        st.session_state.crop_preview = None
+
+        st.success("Изображение успешно обрезано!")
+
+    except Exception as e:
+        st.error(f"Ошибка при обрезке: {str(e)}")
+
+
+def reset_cropping():
+    """Сбрасывает обрезку и восстанавливает оригинал"""
+    st.session_state.processed_image = st.session_state.original_image.copy()
+    st.session_state.crop_state = {
+        'top_left': None,
+        'bottom_right': None,
+        'cropped_image': None
+    }
+    st.session_state.line_splitter = LineSplitter(st.session_state.processed_image)
+    st.session_state.crop_points = []
+    st.session_state.crop_preview = None
+    st.success("Обрезка полностью сброшена")
 
 
 def color_selection():
     st.header("Выбор линий по цвету")
 
-    if st.session_state.processed_image is None:
-        st.warning("Сначала загрузите изображение")
+    # Проверяем наличие изображения
+    if st.session_state.crop_state.get('cropped_image') is not None:
+        # Сохраняем обрезанное изображение в отдельный ключ при первом обнаружении
+        if 'preserved_cropped_image' not in st.session_state:
+            st.session_state.preserved_cropped_image = st.session_state.crop_state['cropped_image'].copy()
+            st.write("Saved crop_state['cropped_image'] to preserved_cropped_image")
+        source_image = st.session_state.crop_state['cropped_image']
+        st.write("Using crop_state['cropped_image'] as source_image")
+    elif 'preserved_cropped_image' in st.session_state:
+        source_image = st.session_state.preserved_cropped_image
+        st.write("Using preserved_cropped_image as source_image (crop_state['cropped_image'] is None)")
+    elif st.session_state.processed_image is not None:
+        source_image = st.session_state.processed_image
+        st.write("Using processed_image as source_image (no cropping applied)")
+    else:
+        show_warning("Сначала загрузите и обработайте изображение")
         return
 
-    # Конвертируем изображение в RGB для отображения
-    img_display = cv2.cvtColor(st.session_state.processed_image, cv2.COLOR_BGR2RGB)
+    # Отладка: размеры источника
+    st.write(f"source_image shape: {source_image.shape}")
 
-    # Используем компонент для получения координат клика
-    st.subheader("Кликните на линию для выбора цвета")
-    coordinates = streamlit_image_coordinates(img_display, key="pil_picker")
+    # Инициализируем или обновляем статическое изображение для отображения
+    if ('color_selection_image' not in st.session_state or
+        st.session_state.color_selection_image.shape != source_image.shape):
+        st.write("Updating color_selection_image")
+        # Преобразуем source_image в RGB для корректного отображения
+        source_rgb = cv2.cvtColor(source_image.copy(), cv2.COLOR_BGR2RGB)
+        st.session_state.color_selection_image = source_rgb
+    else:
+        st.write("Keeping existing color_selection_image")
 
-    # Если был клик по изображению
-    if coordinates is not None:
-        x = coordinates["x"]
-        y = coordinates["y"]
+    # Отображаем статическое изображение (в RGB)
+    st.image(st.session_state.color_selection_image, caption="Текущее изображение для выбора цвета", use_column_width=True)
 
-        # Получаем цвет пикселя и конвертируем в правильный формат
-        color_bgr = st.session_state.processed_image[y, x]
-        selected_color = (int(color_bgr[2]), int(color_bgr[1]), int(color_bgr[0]))  # BGR to RGB
+    # Отладочный вывод размеров
+    st.write(f"Размер отображаемого изображения: {st.session_state.color_selection_image.shape}")
 
-        # Инициализируем список цветов если нужно
-        if "selected_colors" not in st.session_state:
-            st.session_state.selected_colors = []
+    # Инициализация состояния цветов
+    if 'selected_colors' not in st.session_state:
+        st.session_state.selected_colors = []
 
-        # Добавляем цвет если его еще нет
+    # Обработка выбора цвета через клик
+    clicked_coords = streamlit_image_coordinates(st.session_state.color_selection_image, key="color_picker")
+
+    if clicked_coords is not None:
+        x, y = int(clicked_coords["x"]), int(clicked_coords["y"])
+        # Отладка: координаты клика
+        st.write(f"Clicked coordinates: ({x}, {y})")
+        # Используем color_selection_image (RGB) для получения цвета
+        color_rgb = st.session_state.color_selection_image[y, x]
+        selected_color = (int(color_rgb[0]), int(color_rgb[1]), int(color_rgb[2]))
+
         if selected_color not in st.session_state.selected_colors:
             st.session_state.selected_colors.append(selected_color)
-            st.success(f"Выбран цвет: RGB{selected_color}")
-            # Сбрасываем линии при добавлении нового цвета
-            if "lines_extracted" in st.session_state:
-                del st.session_state.lines_extracted
+            st.success(f"Добавлен цвет: RGB{selected_color}")
         else:
-            st.warning("Этот цвет уже был добавлен ранее")
+            st.warning("Этот цвет уже был добавлен")
 
     # Ручной выбор цвета
-    manual_color = st.color_picker("Или выберите цвет вручную", "#FF0000")
-    if st.button("Добавить выбранный цвет"):
-        manual_rgb = tuple(int(manual_color.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
-        if "selected_colors" not in st.session_state:
-            st.session_state.selected_colors = []
+    manual_color = st.color_picker("Или выберите цвет вручную", "#FF0000", key="manual_color_picker")
 
+    if st.button("Добавить выбранный цвет", key="add_manual_color"):
+        manual_rgb = tuple(int(manual_color.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
         if manual_rgb not in st.session_state.selected_colors:
             st.session_state.selected_colors.append(manual_rgb)
             st.success(f"Добавлен цвет: RGB{manual_rgb}")
-            # Сбрасываем линии при добавлении нового цвета
-            if "lines_extracted" in st.session_state:
-                del st.session_state.lines_extracted
         else:
-            st.warning("Этот цвет уже был добавлен ранее")
+            st.warning("Этот цвет уже был добавлен")
 
     # Отображение выбранных цветов
-    if "selected_colors" in st.session_state and st.session_state.selected_colors:
+    if st.session_state.selected_colors:
         st.subheader("Выбранные цвета")
-
-        # Создаем 5 колонок для отображения цветов
         cols = st.columns(5)
-        col_index = 0
 
         for i, color in enumerate(st.session_state.selected_colors):
-            with cols[col_index]:
-                # Убедимся, что цвет в правильном формате
-                if isinstance(color, (list, np.ndarray)):
-                    color = tuple(map(int, color))
+            with cols[i % 5]:
+                color_tuple = tuple(map(int, color)) if isinstance(color, (list, np.ndarray)) else color
+                text_color = "white" if sum(color_tuple) / 3 < 128 else "black"
 
-                # Создаем квадрат с цветом
                 st.markdown(
-                    f'<div style="width:60px;height:60px;background-color:rgb{color};'
-                    'margin:5px;border:1px solid #ccc;border-radius:5px;'
-                    'display:flex;justify-content:center;align-items:center;'
-                    'color:{"white" if sum(color)/3 < 128 else "black"};">'
-                    f'{i + 1}</div>',
+                    f'<div style="width:100%;height:60px;background-color:rgb{color_tuple};'
+                    f'margin:5px 0;border:1px solid #ddd;border-radius:5px;'
+                    f'display:flex;flex-direction:column;justify-content:center;align-items:center;'
+                    f'color:{text_color};">'
+                    f'<div style="font-weight:bold;">Цвет {i + 1}</div>'
+                    f'<div style="font-size:0.8em;">RGB{color_tuple}</div></div>',
                     unsafe_allow_html=True
                 )
-                st.write(f"RGB{color}")
 
-                if st.button(f"Удалить #{i + 1}", key=f"remove_{i}"):
+                if st.button(f"❌ Удалить", key=f"remove_color_{i}"):
                     st.session_state.selected_colors.pop(i)
                     st.rerun()
 
-            col_index = (col_index + 1) % 5  # Переход на следующую колонку
+    # Инициализация LineSplitter с текущим изображением (BGR, как ожидает OpenCV)
+    st.session_state.line_splitter = LineSplitter(source_image)
 
-    # В конце color_selection() после выбора цветов:
-    if "selected_colors" in st.session_state and st.session_state.selected_colors:
-        st.session_state.line_images = []
-        for color in st.session_state.selected_colors:
-            # Создаем временный LineSplitter для каждой линии
-            splitter = LineSplitter(st.session_state.processed_image)
-            splitter.splitter(color)
-            lines = splitter.get_lines()
-            if lines:
-                # Сохраняем изображение линии в RGB формате
-                line_rgb = cv2.cvtColor(lines[0].image, cv2.COLOR_BGR2RGB)
-                st.session_state.line_images.append(line_rgb)
+def get_current_image():
+    """Возвращает текущее рабочее изображение с правильным приоритетом"""
+    if st.session_state.crop_state.get('cropped_image') is not None:
+        return st.session_state.crop_state['cropped_image']
+    if st.session_state.processed_image is not None:
+        return st.session_state.processed_image
+    return st.session_state.original_image
 
 
 def coordinate_system():
     st.header("Система координат")
 
-    if st.session_state.processed_image is None:
-        st.warning("Сначала загрузите изображение")
+    if 'processed_image' not in st.session_state or st.session_state.processed_image is None:
+        show_warning("Сначала загрузите и обрежьте изображение")
         return
+
+    img = st.session_state.processed_image
 
     if not st.session_state.get("selected_colors"):
-        st.warning("Сначала выберите цвета линий в разделе 'Выбор линий по цвету'")
+        show_warning("Сначала выберите цвета линий в разделе 'Выбор линий по цвету'")
         return
 
-    # Инициализация origin_point если не существует
     if "origin_point" not in st.session_state:
         st.session_state.origin_point = (0, 0)
         st.session_state.min_vals = (0, 0)
 
-    # Конвертируем изображение в RGB для отображения
     img_display = cv2.cvtColor(st.session_state.processed_image, cv2.COLOR_BGR2RGB)
 
-    # Выбор точки отсчета
     st.subheader("Установка начала координат")
 
     if st.button("Установить начало координат кликом"):
@@ -255,11 +401,10 @@ def coordinate_system():
             y = coordinates["y"]
             st.session_state.origin_point = (x, y)
             st.session_state.min_vals = (0, 0)
-            st.success(f"Начало координат установлено в точке ({x}, {y})")
+            show_success(f"Начало координат установлено в точке ({x}, {y})")
             st.session_state.click_origin_mode = False
             st.rerun()
 
-    # Ручной ввод координат
     col1, col2 = st.columns(2)
     origin_x = col1.number_input("Координата X",
                                  value=st.session_state.origin_point[0],
@@ -271,10 +416,9 @@ def coordinate_system():
     if st.button("Установить начало координат (вручную)"):
         st.session_state.origin_point = (origin_x, origin_y)
         st.session_state.min_vals = (0, 0)
-        st.success("Точка отсчета установлена")
-        st.experimental_rerun()
+        show_success("Точка отсчета установлена")
+        st.rerun()
 
-    # Диапазон координат
     st.subheader("Установка диапазона координат")
     col1, col2 = st.columns(2)
     x_min = col1.number_input("X минимальное", value=float(st.session_state.min_vals[0]), key="x_min")
@@ -285,36 +429,43 @@ def coordinate_system():
     if st.button("Применить диапазон координат"):
         st.session_state.min_vals = (x_min, y_min)
         st.session_state.max_vals = (x_max, y_max)
-        st.success("Диапазон координат обновлен")
+        show_success("Диапазон координат обновлен")
 
 
 def line_analysis():
     st.header("Анализ линий")
 
-    # Проверка наличия всех необходимых данных
-    if not st.session_state.get("selected_colors"):
-        st.warning("Сначала выберите цвета линий в разделе 'Выбор линий по цвету'")
+    # Проверяем наличие изображения
+    if st.session_state.crop_state.get('cropped_image') is not None:
+        img = st.session_state.crop_state['cropped_image']
+        st.write("Using crop_state['cropped_image'] as source_image")
+    elif 'preserved_cropped_image' in st.session_state:
+        img = st.session_state.preserved_cropped_image
+        st.write("Using preserved_cropped_image as source_image (crop_state['cropped_image'] is None)")
+    elif st.session_state.processed_image is not None:
+        img = st.session_state.processed_image
+        st.write("Using processed_image as source_image (no cropping applied)")
+    else:
+        show_warning("Сначала загрузите и обрежьте изображение")
         return
 
-    if "processed_image" not in st.session_state:
-        st.warning("Сначала загрузите и обработайте изображение")
-        return
+    # Отладка: размеры изображения
+    st.write(f"Source image shape: {img.shape}")
 
     if "origin_point" not in st.session_state or st.session_state.origin_point is None:
-        st.warning("Сначала установите начало координат в разделе 'Система координат'")
+        show_warning("Сначала установите начало координат в разделе 'Система координат'")
         return
 
-    # Обновляем lines_extracted
     st.session_state.lines_extracted = []
     for color in st.session_state.selected_colors:
-        temp_splitter = LineSplitter(st.session_state.processed_image)
+        temp_splitter = LineSplitter(img)  # Используем обрезанное изображение
         if temp_splitter.splitter(color):
             lines = temp_splitter.get_lines()
             if lines:
                 st.session_state.lines_extracted.append(lines[0])
 
     if not st.session_state.get("lines_extracted", []):
-        st.warning("Не удалось выделить линии по выбранным цветам")
+        show_warning("Не удалось выделить линии по выбранным цветам")
         return
 
     for i, line in enumerate(st.session_state.lines_extracted):
@@ -339,7 +490,6 @@ def line_analysis():
                 scanner.set_minimals(st.session_state.min_vals)
                 scanner.set_maximals(st.session_state.max_vals)
 
-                # Находим контуры и точки без аппроксимации
                 scanner.find_contours(filter_type=filter_type)
                 scanner.calc_points(interval=interval)
                 scanner.scale_points()
@@ -347,28 +497,24 @@ def line_analysis():
                 points = scanner.get_scale_points()
 
                 if not points:
-                    st.warning("Не найдено ни одной точки на линии")
+                    show_warning("Не найдено ни одной точки на линии")
                     return
 
                 st.session_state[f"points_df_{i}"] = pd.DataFrame(points, columns=["X", "Y"])
-                st.success(f"Для линии {i + 1} найдено {len(points)} точек (без аппроксимации)")
+                show_success(f"Для линии {i + 1} найдено {len(points)} точек (без аппроксимации)")
 
             except Exception as e:
                 st.error(f"Ошибка обработки линии: {str(e)}")
 
-
-        # Отображение результатов если они есть
         if f"points_df_{i}" in st.session_state:
             df = st.session_state[f"points_df_{i}"]
 
             st.subheader("Результаты обработки")
             st.dataframe(df.head())
 
-            # Визуализация
             fig = px.scatter(df, x="X", y="Y", title=f"Точки линии {i + 1}")
             st.plotly_chart(fig, use_column_width=True)
 
-            # Экспорт данных
             st.subheader("Экспорт данных")
             export_format = st.selectbox(
                 "Формат файла",
@@ -400,38 +546,12 @@ def line_analysis():
                 except Exception as e:
                     st.error(f"Ошибка при экспорте: {str(e)}")
 
-
 def main():
     st.title("Извлечение данных с графиков")
 
-    # Инициализация состояния для хранения кликов
-    if "image_click" not in st.session_state:
-        st.session_state.image_click = None
-
-    # Обработчик кликов по изображению
-    st.write("""
-        <script>
-            const stImage = document.querySelector("img");
-            stImage.style.cursor = "crosshair";
-            stImage.addEventListener("click", function(e) {
-                const rect = this.getBoundingClientRect();
-                const x = Math.round(e.clientX - rect.left);
-                const y = Math.round(e.clientY - rect.top);
-                Streamlit.setComponentValue({"x": x, "y": y});
-            });
-        </script>
-    """, unsafe_allow_html=True)
-
-    # Получаем данные клика
-    click_data = st.session_state.get("image_click", None)
-    if click_data:
-        st.session_state.image_click = click_data
-
-    # Элементы управления в боковой панели
     upload_image()
+    crop_image()  # Обрезка должна быть перед обработкой
     preprocess_controls()
-
-    # Основное содержимое
     color_selection()
     coordinate_system()
     line_analysis()
