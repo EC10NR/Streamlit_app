@@ -1,22 +1,26 @@
-# -*- coding: UTF-8 -*-
 import cv2
 import numpy as np
 from core.image_rotator import ImageRotator
 from core.perspective_corrector import PerspectiveCorrector
+import streamlit as st
+
 
 class Preprocessor:
-    def __init__(self):
-        self.original_img = np.array([])
+    def __init__(self, image=None):
+        if image is None and 'processed_image' in st.session_state:
+            self.original_img = st.session_state.processed_image.copy()
+        else:
+            self.original_img = image.copy() if image is not None else np.array([])
+
         self.preprocessed = self.original_img.copy()
-        self.current_wb = 1.0  # Текущий баланс белого
-        self.current_brightness = 0  # Текущая яркость
-        self.current_contrast = 1.0  # Текущая контрастность
-        self.current_blur = 0  # Текущее размытие
-        self.rotator = ImageRotator()  # Вращатель изображений
-        self.corrector = PerspectiveCorrector()  # Корректор перспективы
+        self.current_wb = 1.0
+        self.current_brightness = 0
+        self.current_contrast = 1.0
+        self.current_blur = 0
+        self.rotator = ImageRotator()
+        self.corrector = PerspectiveCorrector()
 
     def reset_original_img(self, img: np.ndarray):
-        """Сбросить исходное изображение и настройки"""
         if img is None:
             raise ValueError("Изображение не может быть пустым")
         self.original_img = img
